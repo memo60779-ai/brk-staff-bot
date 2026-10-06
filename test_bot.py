@@ -68,7 +68,7 @@ def fake_update(text, chat_id=-100111, user_id=7):
 
     message = SimpleNamespace(text=text, reply_text=reply_text)
     update = SimpleNamespace(
-        effective_chat=SimpleNamespace(id=chat_id),
+        effective_chat=SimpleNamespace(id=chat_id, type="group" if chat_id < 0 else "private"),
         effective_user=SimpleNamespace(id=user_id),
         effective_message=message,
     )
@@ -138,9 +138,21 @@ async def run():
     assert len(sent) == 1 and "/sheets" in sent[0]
     print("✓ شيت غير موجود: البوت يطلب التوضيح بدل ما يخترع")
 
+    # 6) قراءة معرف الكروب بكل أشكاله
+    assert bot.parse_chat_ids("-5492479479") == {-5492479479}
+    assert bot.parse_chat_ids("5492479479-") == {-5492479479}  # الناقص بعد الرقم مثل ما يطلع بالعربي
+    assert bot.parse_chat_ids(" -100123 , -100456 ") == {-100123, -100456}
+    bot.ALLOWED = bot.parse_chat_ids("5492479479")  # انكتب بدون ناقص
+    assert bot.chat_allowed(SimpleNamespace(id=-5492479479, type="group"))
+    bot.ALLOWED = {-5492479479}
+    assert not bot.chat_allowed(SimpleNamespace(id=5492479479, type="private"))  # محادثة خاصة بنفس الرقم ما تنقبل
+    assert not bot.chat_allowed(SimpleNamespace(id=-777, type="group"))
+    bot.ALLOWED = {-100111}
+    print("✓ معرف الكروب ينقبل حتى لو الناقص بعد الرقم أو مفقود، والمحادثات الخاصة ما تنقبل")
+
     from telegram.ext import Application
 
-    Application.builder().token(os.environ["TELEGRAM_BOT_TOKEN"]).build()
+    Application.builder().token(os.environ["TELEGRAM_BOT_TOKEN"]).concurrent_updates(True).build()
     print("✓ تطبيق تليكرام ينبني بدون أخطاء")
 
 

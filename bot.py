@@ -37,7 +37,17 @@ log = logging.getLogger("staff-bot")
 
 TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "")
 SHEET_ID = os.environ.get("SHEET_ID", "")
-ALLOWED = {int(x) for x in re.findall(r"-?\d+", os.environ.get("ALLOWED_CHAT_IDS", ""))}
+
+
+def parse_chat_ids(raw: str) -> set[int]:
+    """يقرأ المعرفات حتى لو الناقص انكتب بعد الرقم (5492479479-) مثل ما يطلع بالنص العربي."""
+    ids = set()
+    for lead, digits, trail in re.findall(r"(-?)(\d+)(-?)", raw):
+        ids.add(-int(digits) if (lead or trail) else int(digits))
+    return ids
+
+
+ALLOWED = parse_chat_ids(os.environ.get("ALLOWED_CHAT_IDS", ""))
 WRITER_MODEL = os.environ.get("WRITER_MODEL", "claude-sonnet-5")
 ROUTER_MODEL = os.environ.get("ROUTER_MODEL", "claude-haiku-4-5-20251001")
 CACHE_SECONDS = int(os.environ.get("CACHE_MINUTES", "10")) * 60
@@ -208,8 +218,25 @@ HELP = (
 _pending: dict[tuple[int, int], tuple[float, str]] = {}  # سؤال توضيح ينتظر جواب
 
 
+def chat_allowed(chat) -> bool:
+    if chat is None:
+        return False
+    if chat.id in ALLOWED:
+        return True
+    # معرف الكروب دائماً سالب: إذا انكتب بدون الناقص نقبله للكروبات فقط
+    return getattr(chat, "type", "") in ("group", "supergroup") and abs(chat.id) in {abs(i) for i in ALLOWED}
+
+
 def allowed(update: Update) -> bool:
-    return bool(update.effective_chat) and update.effective_chat.id in ALLOWED
+    chat = update.effective_chat
+    ok = chat_allowed(chat)
+    log.info("update from chat %s (%s) allowed=%s", getattr(chat, "id", None), getattr(chat, "type", None), ok)
+    return ok
+
+
+async def not_allowed_hint(update: Update) -> None:
+    """رد على الأوامر فقط بمحادثة غير مضافة، حتى يبين السبب بدل السكوت."""
+    await update.effective_message.reply_text("هذه المحادثة غير مضافة للبوت. اكتب /id وحط الرقم بمتغير ALLOWED_CHAT_IDS.")
 
 
 async def send(update: Update, text: str) -> None:
@@ -219,17 +246,22 @@ async def send(update: Update, text: str) -> None:
 
 async def cmd_id(update: Update, _: ContextTypes.DEFAULT_TYPE) -> None:
     chat = update.effective_chat
-    state = "مسموح ✅" if chat.id in ALLOWED else "غير مضاف بعد"
-    await update.effective_message.reply_text(f"معرف هذه المحادثة: {chat.id}\nالحالة: {state}")
+    state = "مسموح ✅" if chat_allowed(chat) else "غير مضاف بعد"
+    await update.effective_message.reply_text(
+        f"معرف هذه المحادثة (اضغط عليه للنسخ):\n<code>{chat.id}</code>\nالحالة: {state}", parse_mode="HTML"
+    )
 
 
 async def cmd_help(update: Update, _: ContextTypes.DEFAULT_TYPE) -> None:
-    if allowed(update):
-        await send(update, HELP)
+    if not allowed(update):
+        await not_allowed_hint(update)
+        return
+    await send(update, HELP)
 
 
 async def cmd_sheets(update: Update, _: ContextTypes.DEFAULT_TYPE) -> None:
     if not allowed(update):
+        await not_allowed_hint(update)
         return
     try:
         sheets = await get_sheets()
@@ -241,6 +273,7 @@ async def cmd_sheets(update: Update, _: ContextTypes.DEFAULT_TYPE) -> None:
 
 async def cmd_refresh(update: Update, _: ContextTypes.DEFAULT_TYPE) -> None:
     if not allowed(update):
+        await not_allowed_hint(update)
         return
     try:
         sheets = await get_sheets(force=True)
@@ -306,7 +339,8 @@ def main() -> None:
 
     global claude
     claude = AsyncAnthropic()
-    app = Application.builder().token(TOKEN).build()
+    log.info("allowed chats: %s", sorted(ALLOWED))
+    app = Application.builder().token(TOKEN).concurrent_updates(True).build()
     app.add_handler(CommandHandler("id", cmd_id))
     app.add_handler(CommandHandler(["start", "help"], cmd_help))
     app.add_handler(CommandHandler("sheets", cmd_sheets))
