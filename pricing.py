@@ -25,27 +25,40 @@ _COMMISSION = re.compile(r"عمول")
 _TRAILING_JUNK = re.compile(r"[\s(\[\-–—:،,+*]+$")
 _MERGE = re.compile(r'<mergeCell ref="([A-Z]+)(\d+):([A-Z]+)(\d+)"')
 _SPACED_NUMBER = re.compile(r"^\d{1,3}(?: \d{3})+$")
+_INVISIBLE = re.compile("[\u200b-\u200f\u202a-\u202e\u2066-\u2069\ufeff" + TATWEEL + "]")
 
 
 def clean(text) -> str:
     """سطر واحد: يشيل المدّات (ـ) والفراغات الزايدة."""
-    return " ".join(str(text).replace(TATWEEL, "").split())
+    return " ".join(_INVISIBLE.sub("", str(text)).split())
 
 
 def clean_multiline(text) -> str:
     """يحافظ على الأسطر، ويحول خطوط الفصل (-----) إلى سطر جديد."""
-    text = str(text).replace(TATWEEL, "").replace("\r", "\n")
-    text = re.sub(r"[-*=_]{4,}", "\n", text)
+    text = _INVISIBLE.sub("", str(text)).replace("\r", "\n")
+    text = re.sub(r"[-*=_]{3,}", "\n", text)
     lines = [" ".join(line.split()) for line in text.split("\n")]
     return "\n".join(line for line in lines if line)[:MAX_CELL_CHARS]
 
 
+_AMOUNT = r"[\d.,]+\s*(?:\$|دينار|د\.?\s?ع|الف|دولار)?"
+_CLAUSE = re.compile(
+    r"\(?\s*عمول[ةه]\s*(?:الشركات|شركات|العرض الخاص)?\s*" + _AMOUNT
+    + r"(?:\s*(?:و|\+)?\s*(?:عمول[ةه]\s*)?العرض الخاص\s*(?:اسعار تسديد|تسديد|" + _AMOUNT + r"))?\s*\)?"
+)
+
+
 def strip_commission(text: str) -> str:
-    """يقص النص من أول ذكر للعمولة لآخر الخلية. يرجع نص فارغ إذا الخلية كلها عمولة."""
-    match = _COMMISSION.search(text)
-    if not match:
+    """يشيل جملة العمولة من النص ويخلي الباقي (مثل عنوان العرض). يرجع نص فارغ إذا الخلية كلها عمولة."""
+    if not _COMMISSION.search(text):
         return text
-    return _TRAILING_JUNK.sub("", text[: match.start()])
+    text = _CLAUSE.sub(" ", text)
+    match = _COMMISSION.search(text)
+    if match:  # صيغة ما نعرفها: نقص من أول ذكر للعمولة لآخر الخلية
+        text = text[: match.start()]
+    text = re.sub(r"\(\s*\)", " ", text)
+    lines = [_TRAILING_JUNK.sub("", " ".join(line.split())) for line in text.split("\n")]
+    return "\n".join(line for line in lines if line)
 
 
 @dataclass
@@ -170,7 +183,7 @@ def export_url(sheet_id: str) -> str:
 
 def remove_commission_lines(text: str) -> str:
     """حماية أخيرة لنسخة الزبون: يشيل أي سطر يذكر العمولة من الناتج."""
-    return "\n".join(line for line in text.split("\n") if not _COMMISSION.search(line.replace(TATWEEL, "")))
+    return "\n".join(line for line in text.split("\n") if not _COMMISSION.search(_INVISIBLE.sub("", line)))
 
 
 def column_letter(index: int) -> str:
